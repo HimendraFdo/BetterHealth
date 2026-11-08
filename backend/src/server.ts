@@ -1,16 +1,29 @@
 import { buildApp } from "./app.js";
 import { loadGoogleConfig } from "./config.js";
-import { FileTokenStore } from "./tokenStore.js";
+import { createPool } from "./db.js";
+import { PostgresMetricsStore } from "./postgresMetricsStore.js";
+import { PostgresTokenStore } from "./postgresTokenStore.js";
 
 // Config comes from environment variables so the same code runs on your
 // laptop, the VPS, and the NUC with different settings.
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? "127.0.0.1";
+const syncIntervalMinutes = Number(process.env.SYNC_INTERVAL_MINUTES ?? 60);
+const syncBackfillDays = Number(process.env.SYNC_BACKFILL_DAYS ?? 365);
 
 const google = loadGoogleConfig();
+const pool = createPool();
 const app = buildApp({
   google,
-  tokenStore: new FileTokenStore(process.env.TOKEN_FILE ?? ".data/google-tokens.json"),
+  tokenStore: new PostgresTokenStore(pool),
+  metricsStore: new PostgresMetricsStore(pool),
+  syncIntervalMinutes,
+  syncBackfillDays,
+});
+
+// When the server shuts down, close the database connections too.
+app.addHook("onClose", async () => {
+  await pool.end();
 });
 
 if (!google) {

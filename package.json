@@ -6,6 +6,7 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace backend",
+    "migrate": "npm run migrate --workspace backend",
     "build": "npm run build --workspaces",
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm run test --workspaces"

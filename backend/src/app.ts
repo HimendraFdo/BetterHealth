@@ -1,8 +1,12 @@
 import { randomBytes } from "node:crypto";
 import Fastify, { type FastifyReply } from "fastify";
 import type { GoogleConfig } from "./config.js";
-import { GoogleAuthError, buildAuthUrl, exchangeCode, getAccessToken } from "./google/oauth.js";
-import { HealthApiError, addDays, getDailySteps, getIdentity } from "./google/health.js";
+import { addDays, daysBetween, isValidDate, localDate } from "./dates.js";
+import { GoogleAuthError, buildAuthUrl, exchangeCode } from "./google/oauth.js";
+import { HealthApiError, getIdentity } from "./google/health.js";
+import { METRIC_NAMES, METRIC_UNITS } from "./metrics.js";
+import { MemoryMetricsStore, type MetricsStore } from "./metricsStore.js";
+import { NotConnectedError, createSyncer } from "./sync.js";
 import { MemoryTokenStore, type TokenStore } from "./tokenStore.js";
 
 export interface AppOptions {
@@ -10,13 +14,22 @@ export interface AppOptions {
   // Undefined when GOOGLE_* env vars aren't set; Google routes then say so.
   google?: GoogleConfig;
   tokenStore?: TokenStore;
+  metricsStore?: MetricsStore;
   // Injected so tests can fake Google's responses without the network.
   fetch?: typeof fetch;
+  // Sync in the background every N minutes. Omitted or 0: no timer
+  // (tests leave it out; POST /api/sync still works).
+  syncIntervalMinutes?: number;
+  // How many days of history the first sync downloads.
+  syncBackfillDays?: number;
+  // Injected by tests so "today" doesn't depend on the real clock.
+  today?: () => string;
 }
 
 const STATE_TTL_MS = 10 * 60_000;
-const MAX_STEP_DAYS = 90; // Google's limit for one dailyRollUp request
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Reading from our own database has no Google limit; this just stops one
+// request from asking for decades of rows.
+const MAX_RANGE_DAYS = 366;
 
 // Build the app separately from starting it, so tests can create an
 // instance and send fake requests without opening a real network port.
@@ -24,7 +37,11 @@ export function buildApp({
   logger = true,
   google,
   tokenStore = new MemoryTokenStore(),
+  metricsStore = new MemoryMetricsStore(),
   fetch: fetchFn = fetch,
+  syncIntervalMinutes = 0,
+  syncBackfillDays,
+  today = () => localDate(new Date()),
 }: AppOptions = {}) {
   const app = Fastify({ logger });
 
@@ -32,6 +49,11 @@ export function buildApp({
   // mapped to when they expire. Kept in memory: fine for one user and one
   // server process; a restart just means clicking "connect" again.
   const pendingStates = new Map<string, number>();
+
+  // Undefined without Google settings: there's nothing to sync from.
+  const sync = google
+    ? createSyncer({ google, tokenStore, metricsStore, fetch: fetchFn, backfillDays: syncBackfillDays, today })
+    : undefined;
 
   // A health check: deploy tooling and uptime monitors hit this to ask
   // "is the server alive?" without touching the database or Google.
@@ -75,43 +97,88 @@ export function buildApp({
         await getIdentity(tokens.accessToken, fetchFn);
         await tokenStore.save(tokens);
       } catch (err) {
-        return sendGoogleError(reply, err);
+        return sendSyncError(reply, err);
       }
-      return { connected: true, next: "Try GET /api/steps" };
+      // Start filling the database right away instead of waiting for the
+      // timer. Not awaited: the browser gets its answer immediately.
+      if (sync) void sync().catch((err) => logSyncError(err));
+      return { connected: true, next: "Syncing now; try GET /api/steps in a moment" };
     },
   );
 
-  // Daily step totals. Dates are inclusive "YYYY-MM-DD"; defaults to the
-  // last 7 days ending today (in the server's time zone).
-  app.get<{ Querystring: { start?: string; end?: string } }>(
-    "/api/steps",
-    async (request, reply) => {
-      if (!google) return reply.code(503).send({ error: "Google OAuth is not configured" });
-
-      const end = request.query.end ?? localDate(new Date());
-      const start = request.query.start ?? addDays(end, -6);
-      if (!isValidDate(start) || !isValidDate(end)) {
-        return reply.code(400).send({ error: "start and end must be YYYY-MM-DD" });
-      }
-      const days = daysBetween(start, end) + 1;
-      if (days < 1 || days > MAX_STEP_DAYS) {
-        return reply.code(400).send({ error: `Range must be 1 to ${MAX_STEP_DAYS} days` });
-      }
-
-      try {
-        const accessToken = await getAccessToken(google, tokenStore, fetchFn);
-        if (!accessToken) {
-          return reply.code(401).send({ error: "Not connected; visit /auth/google first" });
+  // GET /api/steps and GET /api/calories: daily totals from our database
+  // (filled by the sync), not from Google. Dates are inclusive
+  // "YYYY-MM-DD"; defaults to the last 7 days ending today.
+  for (const metric of METRIC_NAMES) {
+    app.get<{ Querystring: { start?: string; end?: string } }>(
+      `/api/${metric}`,
+      async (request, reply) => {
+        const end = request.query.end ?? today();
+        const start = request.query.start ?? addDays(end, -6);
+        if (!isValidDate(start) || !isValidDate(end)) {
+          return reply.code(400).send({ error: "start and end must be YYYY-MM-DD" });
         }
-        return { start, end, days: await getDailySteps(accessToken, start, end, fetchFn) };
+        const days = daysBetween(start, end) + 1;
+        if (days < 1 || days > MAX_RANGE_DAYS) {
+          return reply.code(400).send({ error: `Range must be 1 to ${MAX_RANGE_DAYS} days` });
+        }
+        return {
+          metric,
+          unit: METRIC_UNITS[metric],
+          start,
+          end,
+          // Only days the sync has stored; a missing date means no data.
+          days: await metricsStore.range(metric, start, end),
+        };
+      },
+    );
+  }
+
+  // Run a sync now and report what it fetched.
+  app.post("/api/sync", async (_request, reply) => {
+    if (!sync) return reply.code(503).send({ error: "Google OAuth is not configured" });
+    try {
+      return { results: await sync() };
+    } catch (err) {
+      return sendSyncError(reply, err);
+    }
+  });
+
+  // The scheduled sync: once when the server starts, then every N minutes.
+  if (sync && syncIntervalMinutes > 0) {
+    let timer: NodeJS.Timeout | undefined;
+    const runScheduledSync = async () => {
+      try {
+        app.log.info({ results: await sync() }, "Scheduled sync finished");
       } catch (err) {
-        return sendGoogleError(reply, err);
+        logSyncError(err);
       }
-    },
-  );
+    };
+    // onReady runs once the server is set up, just before it starts listening.
+    app.addHook("onReady", async () => {
+      void runScheduledSync();
+      timer = setInterval(runScheduledSync, syncIntervalMinutes * 60_000);
+    });
+    app.addHook("onClose", async () => clearInterval(timer));
+  }
+
+  // A sync that fails in the background has no browser to answer, so the
+  // log is the only place to say what went wrong and what to do.
+  function logSyncError(err: unknown) {
+    if (err instanceof NotConnectedError) {
+      app.log.info("Sync skipped: not connected to Google yet; visit /auth/google");
+    } else if (err instanceof GoogleAuthError) {
+      app.log.warn(`Sync failed: Google sign-in expired; visit /auth/google. ${err.message}`);
+    } else {
+      app.log.error({ err }, "Sync failed");
+    }
+  }
 
   // Turn errors from Google into responses that say what to do next.
-  function sendGoogleError(reply: FastifyReply, err: unknown) {
+  function sendSyncError(reply: FastifyReply, err: unknown) {
+    if (err instanceof NotConnectedError) {
+      return reply.code(401).send({ error: err.message });
+    }
     if (err instanceof GoogleAuthError) {
       app.log.warn(err.message);
       // Usually an expired or revoked refresh token: reconnect.
@@ -130,21 +197,4 @@ export function buildApp({
   }
 
   return app;
-}
-
-// "YYYY-MM-DD" for a moment in the server's local time zone.
-function localDate(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-// Real calendar date? Rejects "2026-02-30", which Date would roll into March.
-function isValidDate(date: string): boolean {
-  if (!DATE_RE.test(date)) return false;
-  const d = new Date(`${date}T00:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(date);
-}
-
-function daysBetween(start: string, end: string): number {
-  return Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000);
 }

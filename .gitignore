@@ -9,7 +9,7 @@ build/
 .env
 .env.*
 !.env.example
-# Local OAuth tokens (temporary file store until PostgreSQL in Phase 2)
+# Local data files, e.g. the old Phase 1 token file (tokens now live in PostgreSQL)
 .data/
 
 # Logs
