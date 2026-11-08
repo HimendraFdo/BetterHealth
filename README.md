@@ -45,10 +45,19 @@ npm run build      # compile TypeScript to backend/dist
 
 Copy `backend/.env.example` to `backend/.env` to override settings such as `PORT`.
 
+### Connecting your Google account
+
+1. In the Google Cloud console, create a Web application OAuth client with the redirect URI `http://127.0.0.1:3000/auth/google/callback`, add the `googlehealth.activity_and_fitness.readonly` scope, and add yourself as a test user.
+2. Put `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` in `backend/.env`.
+3. Run `npm run dev` and open http://127.0.0.1:3000/auth/google.
+4. Fetch steps from http://127.0.0.1:3000/api/steps?start=2026-11-01&end=2026-11-07 (inclusive dates, at most 90 days; defaults to the last 7 days).
+
+Tokens are saved to `backend/.data/google-tokens.json` (gitignored) until Phase 2 moves them into PostgreSQL. While the OAuth app is in Testing status, Google expires the refresh token after 7 days, so you'll need to reconnect weekly.
+
 ## Roadmap
 
-- [ ] Phase 0: Foundations (repo, tooling, hello-world backend)
-- [ ] Phase 1: Google OAuth + fetch steps
+- [x] Phase 0: Foundations (repo, tooling, hello-world backend)
+- [x] Phase 1: Google OAuth + fetch steps
 - [ ] Phase 2: PostgreSQL + scheduled sync
 - [ ] Phase 3: Dashboard (steps and calories charts)
 - [ ] Phase 4: Deploy to VPS with Docker, Caddy, and CI/CD

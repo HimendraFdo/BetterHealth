@@ -9,6 +9,8 @@ build/
 .env
 .env.*
 !.env.example
+# Local OAuth tokens (temporary file store until PostgreSQL in Phase 2)
+.data/
 
 # Logs
 *.log
