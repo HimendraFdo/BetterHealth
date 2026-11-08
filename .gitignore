@@ -1,0 +1,21 @@
+# Dependencies: reinstalled from package.json, never committed
+node_modules/
+
+# Build output: generated from source, so it can always be rebuilt
+dist/
+build/
+
+# Secrets: environment files hold API keys and OAuth client secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS and editor clutter
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json

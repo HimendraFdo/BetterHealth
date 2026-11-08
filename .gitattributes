@@ -1,0 +1,8 @@
+# Store text files with LF line endings in the repo.
+# Windows uses CRLF, Linux servers use LF; normalizing avoids noisy diffs
+# and broken shell scripts when we deploy to the VPS.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
