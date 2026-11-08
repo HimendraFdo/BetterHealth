@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    // Emit modern JS; Node 24+ supports everything in ES2024.
+    "target": "ES2024",
+    // Use Node's real module rules (ESM, since package.json has "type": "module").
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    // Catch the most bugs: no implicit any, null checks, etc.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    // Keep `import type` explicit so type-only imports vanish at runtime.
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "sourceMap": true
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}
