@@ -19,6 +19,7 @@ const app = buildApp({
   metricsStore: new PostgresMetricsStore(pool),
   syncIntervalMinutes,
   syncBackfillDays,
+  appUrl: process.env.APP_URL,
 });
 
 // When the server shuts down, close the database connections too.

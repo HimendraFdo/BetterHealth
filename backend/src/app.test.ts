@@ -221,3 +221,72 @@ test("POST /api/sync asks to reconnect when the refresh token is dead", async ()
   assert.equal(res.statusCode, 401);
   assert.match(res.json().error, /visit \/auth\/google/);
 });
+
+test("GET /api/status before connecting Google", async () => {
+  const app = buildApp({ logger: false, google, today });
+  const res = await app.inject({ method: "GET", url: "/api/status" });
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), {
+    googleConfigured: true,
+    connected: false,
+    syncing: false,
+    lastSync: null,
+    today: "2026-11-09",
+    metrics: [
+      { metric: "steps", unit: "steps", syncedThrough: null, lastSyncedAt: null },
+      { metric: "calories", unit: "kcal", syncedThrough: null, lastSyncedAt: null },
+    ],
+  });
+});
+
+test("GET /api/status reports a successful sync", async () => {
+  const tokenStore = new MemoryTokenStore();
+  await tokenStore.save(validTokens());
+  const { fn } = fakeFetch({
+    [STEPS_URL]: fakeRollup(() => ({ steps: { countSum: "100" } })),
+    [CALORIES_URL]: fakeRollup(() => ({ totalCalories: { kcalSum: 2000 } })),
+  });
+  const app = buildApp({ logger: false, google, tokenStore, fetch: fn, today, syncBackfillDays: 2 });
+  await app.inject({ method: "POST", url: "/api/sync" });
+
+  const body = (await app.inject({ method: "GET", url: "/api/status" })).json();
+
+  assert.equal(body.connected, true);
+  assert.equal(body.lastSync.ok, true);
+  assert.equal(body.lastSync.error, undefined);
+  for (const m of body.metrics) {
+    assert.equal(m.syncedThrough, "2026-11-09", m.metric);
+    assert.ok(!Number.isNaN(Date.parse(m.lastSyncedAt)), m.metric);
+  }
+});
+
+test("GET /api/status reports an expired Google sign-in", async () => {
+  const tokenStore = new MemoryTokenStore();
+  await tokenStore.save({ refreshToken: "dead", accessToken: "old", accessTokenExpiresAt: 0, scope: "s" });
+  const { fn } = fakeFetch({ [TOKEN_URL]: () => json({ error: "invalid_grant" }, 400) });
+  const app = buildApp({ logger: false, google, tokenStore, fetch: fn, today });
+  await app.inject({ method: "POST", url: "/api/sync" });
+
+  const body = (await app.inject({ method: "GET", url: "/api/status" })).json();
+
+  assert.equal(body.connected, true); // tokens are stored, but they no longer work
+  assert.equal(body.lastSync.ok, false);
+  assert.equal(body.lastSync.error.code, "auth_expired");
+});
+
+test("callback redirects to the dashboard when appUrl is set", async () => {
+  const { fn } = fakeFetch({
+    [TOKEN_URL]: () => json({ access_token: "a", expires_in: 3599, refresh_token: "r", scope: "s" }),
+    [IDENTITY_URL]: () => json({ name: "users/me/identity", healthUserId: "123" }),
+    [STEPS_URL]: () => json({ rollupDataPoints: [] }),
+    [CALORIES_URL]: () => json({ rollupDataPoints: [] }),
+  });
+  const app = buildApp({ logger: false, google, fetch: fn, today, syncBackfillDays: 1, appUrl: "http://127.0.0.1:5173" });
+
+  const state = await startLogin(app);
+  const res = await app.inject({ method: "GET", url: `/auth/google/callback?code=c&state=${state}` });
+
+  assert.equal(res.statusCode, 302);
+  assert.equal(res.headers.location, "http://127.0.0.1:5173");
+});

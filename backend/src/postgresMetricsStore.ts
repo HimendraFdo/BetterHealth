@@ -1,6 +1,6 @@
 import type pg from "pg";
 import type { DailyValue, Metric } from "./metrics.js";
-import type { MetricsStore } from "./metricsStore.js";
+import type { MetricsStore, SyncState } from "./metricsStore.js";
 
 // Which table and column hold each metric. Table and column names can't be
 // $1 parameters (only values can), so they're put into the SQL text. That's
@@ -48,6 +48,17 @@ export class PostgresMetricsStore implements MetricsStore {
       [metric],
     );
     return rows[0]?.synced_through;
+  }
+
+  async getSyncState(metric: Metric): Promise<SyncState | undefined> {
+    // pg turns timestamptz into a JS Date; the API sends ISO strings.
+    const { rows } = await this.pool.query<{ synced_through: string; last_synced_at: Date }>(
+      "SELECT synced_through, last_synced_at FROM sync_state WHERE metric = $1",
+      [metric],
+    );
+    const row = rows[0];
+    if (!row) return undefined;
+    return { syncedThrough: row.synced_through, lastSyncedAt: row.last_synced_at.toISOString() };
   }
 
   async setSyncedThrough(metric: Metric, date: string): Promise<void> {
