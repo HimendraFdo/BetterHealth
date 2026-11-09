@@ -24,6 +24,19 @@ export interface AppOptions {
   syncBackfillDays?: number;
   // Injected by tests so "today" doesn't depend on the real clock.
   today?: () => string;
+  // Where to send the browser after connecting Google, e.g. the dashboard
+  // at http://127.0.0.1:5173. Omitted: the callback answers with JSON.
+  appUrl?: string;
+}
+
+// Why the last sync failed, in a form the dashboard can act on:
+// "auth_expired" and "not_connected" mean "show the Reconnect button".
+export type SyncErrorCode = "not_connected" | "auth_expired" | "account_not_linked" | "api_error" | "unknown";
+
+export interface LastSync {
+  at: string;
+  ok: boolean;
+  error?: { code: SyncErrorCode; message: string };
 }
 
 const STATE_TTL_MS = 10 * 60_000;
@@ -42,6 +55,7 @@ export function buildApp({
   syncIntervalMinutes = 0,
   syncBackfillDays,
   today = () => localDate(new Date()),
+  appUrl,
 }: AppOptions = {}) {
   const app = Fastify({ logger });
 
@@ -51,8 +65,31 @@ export function buildApp({
   const pendingStates = new Map<string, number>();
 
   // Undefined without Google settings: there's nothing to sync from.
-  const sync = google
+  const syncOnce = google
     ? createSyncer({ google, tokenStore, metricsStore, fetch: fetchFn, backfillDays: syncBackfillDays, today })
+    : undefined;
+
+  // The outcome of the most recent sync (scheduled or "sync now"), kept in
+  // memory for GET /api/status. Undefined until the first sync finishes
+  // after the server starts.
+  let lastSync: LastSync | undefined;
+  let syncing = false;
+
+  // Every sync goes through here so its outcome is recorded.
+  const sync = syncOnce
+    ? async () => {
+        syncing = true;
+        try {
+          const results = await syncOnce();
+          lastSync = { at: new Date().toISOString(), ok: true };
+          return results;
+        } catch (err) {
+          lastSync = { at: new Date().toISOString(), ok: false, error: describeSyncError(err) };
+          throw err;
+        } finally {
+          syncing = false;
+        }
+      }
     : undefined;
 
   // A health check: deploy tooling and uptime monitors hit this to ask
@@ -102,6 +139,7 @@ export function buildApp({
       // Start filling the database right away instead of waiting for the
       // timer. Not awaited: the browser gets its answer immediately.
       if (sync) void sync().catch((err) => logSyncError(err));
+      if (appUrl) return reply.redirect(appUrl);
       return { connected: true, next: "Syncing now; try GET /api/steps in a moment" };
     },
   );
@@ -133,6 +171,33 @@ export function buildApp({
       },
     );
   }
+
+  // What the dashboard needs to draw its header: is Google connected, how
+  // fresh is the data, and did the last sync fail (e.g. expired sign-in)?
+  app.get("/api/status", async () => {
+    const tokens = await tokenStore.load();
+    const metrics = await Promise.all(
+      METRIC_NAMES.map(async (metric) => {
+        const state = await metricsStore.getSyncState(metric);
+        return {
+          metric,
+          unit: METRIC_UNITS[metric],
+          syncedThrough: state?.syncedThrough ?? null,
+          lastSyncedAt: state?.lastSyncedAt ?? null,
+        };
+      }),
+    );
+    return {
+      googleConfigured: google !== undefined,
+      connected: tokens !== undefined,
+      syncing,
+      lastSync: lastSync ?? null,
+      // The server's "today", so the dashboard's date ranges match the
+      // server's time zone rather than the browser's.
+      today: today(),
+      metrics,
+    };
+  });
 
   // Run a sync now and report what it fetched.
   app.post("/api/sync", async (_request, reply) => {
@@ -172,6 +237,20 @@ export function buildApp({
     } else {
       app.log.error({ err }, "Sync failed");
     }
+  }
+
+  function describeSyncError(err: unknown): NonNullable<LastSync["error"]> {
+    if (err instanceof NotConnectedError) return { code: "not_connected", message: err.message };
+    if (err instanceof GoogleAuthError) {
+      return { code: "auth_expired", message: "Google sign-in failed or expired; reconnect Google" };
+    }
+    if (err instanceof HealthApiError) {
+      if (err.reason === "ACCOUNT_NOT_LINKED") {
+        return { code: "account_not_linked", message: "This Google account isn't linked to Google Health" };
+      }
+      return { code: "api_error", message: `Google Health API error: ${err.message}` };
+    }
+    return { code: "unknown", message: err instanceof Error ? err.message : String(err) };
   }
 
   // Turn errors from Google into responses that say what to do next.

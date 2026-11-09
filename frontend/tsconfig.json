@@ -1,0 +1,19 @@
+{
+  // Type-checks the browser code in src/. Vite itself doesn't type-check
+  // (it only strips types to run fast), so `npm run typecheck` does it.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    // "bundler": resolve imports the way Vite does, so no ".js" endings.
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom/vitest"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}

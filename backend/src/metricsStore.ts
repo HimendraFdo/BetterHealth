@@ -1,5 +1,13 @@
 import type { DailyValue, Metric } from "./metrics.js";
 
+// What the sync has done for one metric, for the dashboard's status line.
+export interface SyncState {
+  // The newest day fetched, "YYYY-MM-DD".
+  syncedThrough: string;
+  // When that was saved, as an ISO 8601 timestamp.
+  lastSyncedAt: string;
+}
+
 // Storage for synced daily totals, shaped like TokenStore: the routes and the
 // sync job use this interface, tests use the memory version, and the server
 // uses PostgresMetricsStore.
@@ -11,6 +19,8 @@ export interface MetricsStore {
   // The newest day the sync has fetched, or undefined if it never ran.
   getSyncedThrough(metric: Metric): Promise<string | undefined>;
   setSyncedThrough(metric: Metric, date: string): Promise<void>;
+  // Both sync fields, or undefined if the sync never ran for this metric.
+  getSyncState(metric: Metric): Promise<SyncState | undefined>;
 }
 
 export class MemoryMetricsStore implements MetricsStore {
@@ -19,7 +29,7 @@ export class MemoryMetricsStore implements MetricsStore {
     steps: new Map(),
     calories: new Map(),
   };
-  private syncedThrough = new Map<Metric, string>();
+  private syncState = new Map<Metric, SyncState>();
 
   async upsert(metric: Metric, days: DailyValue[]) {
     for (const { date, value } of days) this.days[metric].set(date, value);
@@ -33,10 +43,14 @@ export class MemoryMetricsStore implements MetricsStore {
   }
 
   async getSyncedThrough(metric: Metric) {
-    return this.syncedThrough.get(metric);
+    return this.syncState.get(metric)?.syncedThrough;
   }
 
   async setSyncedThrough(metric: Metric, date: string) {
-    this.syncedThrough.set(metric, date);
+    this.syncState.set(metric, { syncedThrough: date, lastSyncedAt: new Date().toISOString() });
+  }
+
+  async getSyncState(metric: Metric) {
+    return this.syncState.get(metric);
   }
 }

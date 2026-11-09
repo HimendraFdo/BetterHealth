@@ -1,0 +1,15 @@
+{
+  // vite.config.ts runs in Node, not the browser, so it gets its own settings.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["vite.config.ts"]
+}

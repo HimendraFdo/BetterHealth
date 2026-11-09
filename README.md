@@ -42,17 +42,18 @@ Requires Node.js 24 or newer and Docker Desktop.
 docker compose up -d  # start PostgreSQL in the background (data persists in a volume)
 npm install        # install dependencies for every workspace
 npm run migrate    # create or update the database tables
-npm run dev        # start the backend with auto-reload on http://127.0.0.1:3000
+npm run dev        # start the backend (:3000) and the dashboard (http://127.0.0.1:5173) together
 npm test           # run tests
 npm run typecheck  # type-check without emitting files
-npm run build      # compile TypeScript to backend/dist
+npm run build      # compile backend/dist and bundle frontend/dist
 ```
 
 ### Connecting your Google account
 
 1. In the Google Cloud console, create a Web application OAuth client with the redirect URI `http://127.0.0.1:3000/auth/google/callback`, add the `googlehealth.activity_and_fitness.readonly` scope, and add yourself as a test user.
 2. Put `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` in `backend/.env`.
-3. Run `npm run dev` and open http://127.0.0.1:3000/auth/google. Connecting starts a sync straight away.
+3. Set `APP_URL=http://127.0.0.1:5173` in `backend/.env` so Google sends you back to the dashboard afterwards.
+4. Run `npm run dev`, open http://127.0.0.1:5173 and click **Connect Google**. Connecting starts a sync straight away.
 
 Tokens are stored in PostgreSQL. While the OAuth app is in Testing status, Google expires the refresh token after 7 days, so you'll need to reconnect weekly.
 
@@ -65,6 +66,9 @@ The server syncs steps and calories from Google into PostgreSQL when it starts a
 | `GET /api/steps?start=2026-11-01&end=2026-11-07` | Daily step totals from the database (inclusive dates, up to 366 days; defaults to the last 7 days) |
 | `GET /api/calories?start=...&end=...` | Daily calories burned (kcal), same parameters |
 | `POST /api/sync` | Sync from Google now and report what was fetched |
+| `GET /api/status` | Whether Google is connected, how far each metric is synced, and whether the last sync failed (e.g. expired sign-in) |
+
+The dashboard (`frontend/`, React + Vite) proxies `/api` and `/auth` to the backend in development, so the browser only talks to one origin.
 
 A day with `"value": null` means Google had no data for it; a missing day means it hasn't been synced or Google has no record of it.
 
